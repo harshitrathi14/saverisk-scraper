@@ -30,6 +30,7 @@ const argVal = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] :
 const LIMIT = argVal('--limit') ? parseInt(argVal('--limit'), 10) : null;
 const MAX_NEW = argVal('--max-new') ? parseInt(argVal('--max-new'), 10) : Infinity;
 const REFRESH = args.includes('--refresh');
+const MAX_AGE_DAYS = argVal('--max-age') ? parseFloat(argVal('--max-age')) : Infinity; // re-fetch cache older than N days
 const FAST = args.includes('--fast');
 const RATING = args.includes('--rating');
 const NO_OVERVIEW = args.includes('--no-overview');
@@ -108,8 +109,10 @@ function loadEntities() {
   for (const e of entities) {
     const key = e.name.toUpperCase();
 
-    // use cache unless refreshing
-    if (!REFRESH && cache[key]) { e._cached = true; continue; }
+    // use cache unless refreshing or the cached snapshot is older than --max-age days
+    const rec0 = cache[key];
+    const fresh = rec0 && (MAX_AGE_DAYS === Infinity || (rec0.scrapedAt && (NOW - new Date(rec0.scrapedAt)) <= MAX_AGE_DAYS * 864e5));
+    if (!REFRESH && fresh) { e._cached = true; continue; }
     if (aborted || reachedCap) { e._skipped = true; continue; }
     if (newFetches >= MAX_NEW) { reachedCap = true; e._skipped = true; continue; }
 

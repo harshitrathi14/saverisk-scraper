@@ -11,10 +11,37 @@ over time windows.
 
 > Running the scraper uses **no AI / zero tokens** — it is plain Playwright browser automation.
 
-## Run it
+## WEEKLY REFRESH — runbook (do this, minimal tokens)
+The session expires (~time-based), so each weekly refresh starts with a fresh login.
+
+1. **Update the input** (if the onboarded list/sectors changed): re-export
+   `CIN_exposure_onboarded_nimbus entities.xlsx`, then regenerate `input.csv`:
+   ```bash
+   node -e 'const X=require("xlsx"),fs=require("fs");const wb=X.readFile("CIN_exposure_onboarded_nimbus entities.xlsx",{cellDates:true});const ws=wb.Sheets[wb.SheetNames[0]];const rows=X.utils.sheet_to_json(ws,{defval:""});const esc=v=>{v=v==null?"":String(v);return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v};const out=["name,short_name,cin,exposure,sector,onboarded_date"];for(const r of rows){const od=r.onboardedDate instanceof Date?r.onboardedDate.toISOString().slice(0,10):(r.onboardedDate||"");out.push([r.name,r.short_name,r.cin,r.Exposure,r.Sector,od].map(esc).join(","))}fs.writeFileSync("input.csv",out.join("\n")+"\n");console.log("input.csv:",rows.length)'
+   ```
+2. **Log in** (one-time per refresh): `node login.js` → a browser opens on the desktop;
+   log in with **mobile number + OTP** (NOT username/password — that has reCAPTCHA). It auto-saves.
+   - If the window doesn't appear: `rm -f .session/Singleton*` and re-run. `pgrep` self-matches
+     the command string — confirm a real browser via `ps -eo comm | grep '^chrome$'`.
+3. **Refresh the data** (re-pull charges that are older than ~6 days; resumes cleanly):
+   ```bash
+   node scrape.js --max-age 6
+   ```
+   ~25–35 min at gentle pace. It diffs against last week and fills the "new since last run" report.
+   - If it prints **SESSION EXPIRED** mid-run: just re-run `node login.js` then
+     `node scrape.js --max-age 6` again — cache + freshness make it resume from where it stopped.
+4. **Outputs** land in `output/<timestamp>/`. Open `charge_creation_dashboard.html`; share the
+   Excel + `*.pptx`. To only rebuild reports after an input/label tweak (no scraping):
+   `node scrape.js --report-only`.
+
+That's it — steps 2–4 are the whole weekly job. The agent should NOT re-derive the analysis or
+re-read every file; this runbook + the sections below are the source of truth.
+
+## Run it (all commands)
 ```bash
 node login.js                  # one-time: opens a browser; log in with mobile + OTP (auto-saves session)
 node scrape.js                 # gentle, cache-backed run; only fetches uncached entities
+node scrape.js --max-age 6     # WEEKLY: re-fetch cache older than 6 days (resumable); rebuilds reports
 node scrape.js --report-only   # rebuild ALL outputs from cache, no browser/session (instant)
 node scrape.js --max-new 150   # fetch at most 150 new entities, then stop (batching across sessions)
 node scrape.js --refresh       # ignore cache, re-fetch everything

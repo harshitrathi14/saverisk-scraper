@@ -36,14 +36,18 @@ const fmtCr = (n) => '₹' + (Number(n) || 0).toLocaleString('en-IN', { maximumF
 function table(cols, rows, opts = {}) {
   if (!rows || !rows.length) return '<p class="empty">No records.</p>';
   const max = opts.max || 100;
-  const head = '<tr>' + cols.map((c) => `<th>${esc(c.label)}</th>`).join('') + '</tr>';
+  const head = '<tr>' + cols.map((c) => {
+    const numeric = c.cr || c.num ? ' num' : '';
+    return `<th class="sortable${numeric}" title="Click to sort">${esc(c.label)}</th>`;
+  }).join('') + '</tr>';
   const body = rows.slice(0, max).map((r) => '<tr>' + cols.map((c) => {
     let v = r[c.key];
     if (c.cr) v = fmtCr(v); else if (c.num) v = fmtN(v);
     const cls = c.na && (r[c.key] === 'Yes') ? ' class="na"' : '';
-    return `<td${cls}${c.right ? ' style="text-align:right"' : ''}>${esc(v)}</td>`;
+    const raw = (c.cr || c.num) ? (Number(r[c.key]) || 0) : String(r[c.key] == null ? '' : r[c.key]);
+    return `<td${cls}${c.right ? ' style="text-align:right"' : ''} data-v="${esc(String(raw))}">${esc(v)}</td>`;
   }).join('') + '</tr>').join('');
-  const more = rows.length > max ? `<tr><td colspan="${cols.length}" class="muted">…and ${rows.length - max} more (see Excel)</td></tr>` : '';
+  const more = rows.length > max ? `<tr class="morerow"><td colspan="${cols.length}" class="muted">…and ${rows.length - max} more (see Excel)</td></tr>` : '';
   return `<table>${head}${body}${more}</table>`;
 }
 
@@ -164,6 +168,9 @@ section h2{margin:0 0 4px;font-size:16px}section .desc{color:var(--muted);font-s
 .pane{display:none}.pane.active{display:block}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{text-align:left;color:var(--muted);font-weight:600;border-bottom:2px solid var(--line);padding:7px 8px;white-space:nowrap}
+th.sortable{cursor:pointer;user-select:none}th.sortable:hover{color:var(--ink)}
+th.sortable::after{content:'\\2195';font-size:9px;opacity:.35;margin-left:4px}
+th[data-dir=asc]::after{content:'\\25B2';opacity:.9}th[data-dir=desc]::after{content:'\\25BC';opacity:.9}
 td{border-bottom:1px solid var(--line);padding:7px 8px;vertical-align:top}
 tr:hover td{background:#fafbfe}
 td.na{color:var(--na);font-weight:600}.muted,.empty{color:var(--muted)}.empty{padding:14px 4px}
@@ -213,7 +220,7 @@ footer{color:var(--muted);font-size:11.5px;text-align:center;padding:24px}
 
   <section>
     <h2>Most active lenders</h2>
-    <div class="desc">Lenders ranked by charges created in the window across the Northern Arc onboarded portfolio (NACL flagged).</div>
+    <div class="desc">Lenders ranked by charges created in the window across the Northern Arc onboarded portfolio (NACL flagged). <b>Click any column header to sort</b> — e.g. by Amount or Onboarded Borrowers.</div>
     ${lenderTabs}
   </section>
 
@@ -244,6 +251,29 @@ document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{
   const sec=group.parentElement;
   sec.querySelectorAll('.pane').forEach(p=>p.classList.toggle('active',p.id===id));
 }));
+// click-to-sort on any table header
+document.querySelectorAll('table').forEach(function(tbl){
+  var ths=[].slice.call(tbl.rows[0] ? tbl.rows[0].cells : []);
+  ths.forEach(function(th,idx){
+    if(!th.classList.contains('sortable'))return;
+    th.addEventListener('click',function(){
+      var numeric=th.classList.contains('num');
+      var dir=th.getAttribute('data-dir')==='asc'?'desc':'asc';
+      ths.forEach(function(t){t.removeAttribute('data-dir');});
+      th.setAttribute('data-dir',dir);
+      var rows=[].slice.call(tbl.rows,1).filter(function(r){return !r.classList.contains('morerow') && r.cells.length===ths.length;});
+      var rest=[].slice.call(tbl.rows,1).filter(function(r){return r.classList.contains('morerow')||r.cells.length!==ths.length;});
+      rows.sort(function(a,b){
+        var av=a.cells[idx]?a.cells[idx].getAttribute('data-v'):'';
+        var bv=b.cells[idx]?b.cells[idx].getAttribute('data-v'):'';
+        var cmp=numeric?((parseFloat(av)||0)-(parseFloat(bv)||0)):String(av).localeCompare(String(bv));
+        return dir==='asc'?cmp:-cmp;
+      });
+      var tb=tbl.tBodies[0]||tbl.rows[0].parentNode;
+      rows.concat(rest).forEach(function(r){tb.appendChild(r);});
+    });
+  });
+});
 </script>
 </body></html>`;
   fs.writeFileSync(file, html);
