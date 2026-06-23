@@ -1,0 +1,30 @@
+# ---- secrets: NEVER commit (live Saverisk session cookies) ----
+.session/
+storageState.json
+login_out.txt
+*_out.txt
+
+# ---- confidential portfolio data: do not publish ----
+input.csv
+*.xlsx
+*.xls
+*entities*.csv
+*Exposure*.csv
+charges_cache.json
+approved_matches.json
+state.json
+output/
+
+# ---- captured authenticated pages (contain real company data / user ids) ----
+explore_*.html
+explore_*.png
+*_panel.html
+login_page.png
+*.png
+*.html
+
+# ---- build / misc ----
+node_modules/
+dashboard_preview.png
+npm-debug.log*
+.DS_Store
