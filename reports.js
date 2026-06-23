@@ -8,6 +8,7 @@ const L = require('./lib');
 const WINDOWS = [
   { key: '1w', days: 7, label: 'Last 1 Week' },
   { key: '1m', days: 30, label: 'Last 1 Month' },
+  { key: '2m', days: 60, label: 'Last 2 Months' },
   { key: '3m', days: 90, label: 'Last 3 Months' },
   { key: '6m', days: 180, label: 'Last 6 Months' },
 ];
@@ -44,13 +45,13 @@ function buildAnalyses(entities, charges, now, prevState) {
   });
 
   // ---- NA vs Others by sector, per window ----
-  const sectorsAll = [...new Set(entities.map((e) => e.sector || 'Unclassified'))];
+  const sectorsAll = [...new Set(entities.map((e) => e.sector || 'Zero Exposure'))];
   const naVsOthersBySector = {};
   for (const w of WINDOWS) {
     const inW = dated.filter((c) => inWindow(c.date, now, w.days));
     const bySec = {};
     for (const c of inW) {
-      const s = c.sector || 'Unclassified';
+      const s = c.sector || 'Zero Exposure';
       if (!bySec[s]) bySec[s] = { sector: s, na_charges: 0, na_amount_cr: 0, other_charges: 0, other_amount_cr: 0 };
       if (c.isNA) { bySec[s].na_charges++; bySec[s].na_amount_cr += Number(c.amountCr) || 0; }
       else { bySec[s].other_charges++; bySec[s].other_amount_cr += Number(c.amountCr) || 0; }
@@ -67,7 +68,7 @@ function buildAnalyses(entities, charges, now, prevState) {
     externalCharges[w.key] = dated
       .filter((c) => !c.isNA && inWindow(c.date, now, w.days))
       .map((c) => ({
-        entity: c.entity, sector: c.sector || 'Unclassified', exposure_cr: r2((Number(c.exposure) || 0) / 1e7),
+        entity: c.entity, sector: c.sector || 'Zero Exposure', exposure_cr: r2((Number(c.exposure) || 0) / 1e7),
         lender: c.lender, amount_cr: r2(c.amountCr), charge_date: c.creationDate,
         type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan', charge_id: c.chargeId,
       }))
@@ -80,7 +81,7 @@ function buildAnalyses(entities, charges, now, prevState) {
     naCharges[w.key] = dated
       .filter((c) => c.isNA && inWindow(c.date, now, w.days))
       .map((c) => ({
-        entity: c.entity, sector: c.sector || 'Unclassified', exposure_cr: r2((Number(c.exposure) || 0) / 1e7),
+        entity: c.entity, sector: c.sector || 'Zero Exposure', exposure_cr: r2((Number(c.exposure) || 0) / 1e7),
         lender: c.lender, amount_cr: r2(c.amountCr), charge_date: c.creationDate,
         type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan', charge_id: c.chargeId,
       }))
@@ -106,8 +107,54 @@ function buildAnalyses(entities, charges, now, prevState) {
   const firstTime = {};
   for (const w of WINDOWS) {
     firstTime[w.key] = dated.filter((c) => c.firstTime && inWindow(c.date, now, w.days))
-      .map((c) => ({ entity: c.entity, sector: c.sector || 'Unclassified', lender: c.lender, is_na: c.isNA ? 'Yes' : '', amount_cr: r2(c.amountCr), charge_date: c.creationDate, type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' }))
+      .map((c) => ({ entity: c.entity, sector: c.sector || 'Zero Exposure', lender: c.lender, is_na: c.isNA ? 'Yes' : '', amount_cr: r2(c.amountCr), charge_date: c.creationDate, type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' }))
       .sort((a, b) => (L.parseDate(b.charge_date) || 0) - (L.parseDate(a.charge_date) || 0));
+  }
+
+  // ---- lenders lending for the FIRST time to ANY onboarded entity, per window ----
+  // A lender's earliest-ever charge across the whole onboarded portfolio falls in the window
+  // = the lender is a new entrant into the book. (Based on current open charges.)
+  const lenderFirst = {};
+  for (const c of dated) {
+    const f = lenderFirst[c.lender];
+    if (!f || c.date < f.date) lenderFirst[c.lender] = { date: c.date, charges: [c] };
+    else if (c.date.getTime() === f.date.getTime()) f.charges.push(c);
+  }
+  const newLenders = {};
+  for (const w of WINDOWS) {
+    const rows = [];
+    for (const lender of Object.keys(lenderFirst)) {
+      const info = lenderFirst[lender];
+      if (!inWindow(info.date, now, w.days)) continue;
+      for (const c of info.charges) {
+        rows.push({ lender, is_na: c.isNA ? 'Yes' : '', first_borrower: c.entity, sector: c.sector || 'Zero Exposure',
+          amount_cr: r2(c.amountCr), first_charge_date: c.creationDate, type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' });
+      }
+    }
+    newLenders[w.key] = rows.sort((a, b) => (L.parseDate(b.first_charge_date) || 0) - (L.parseDate(a.first_charge_date) || 0));
+  }
+
+  // ---- entities funded (charge created) for the FIRST TIME, per window ----
+  // The entity's earliest-ever charge falls in the window = first time it took on a charge.
+  const entityFirst = {};
+  for (const c of dated) {
+    const f = entityFirst[c.entity];
+    if (!f || c.date < f.date) entityFirst[c.entity] = { date: c.date, charges: [c] };
+    else if (c.date.getTime() === f.date.getTime()) f.charges.push(c);
+  }
+  const firstTimeFunded = {};
+  for (const w of WINDOWS) {
+    const rows = [];
+    for (const ent of Object.keys(entityFirst)) {
+      const info = entityFirst[ent];
+      if (!inWindow(info.date, now, w.days)) continue;
+      for (const c of info.charges) {
+        rows.push({ entity: ent, sector: c.sector || 'Zero Exposure', exposure_cr: r2((Number(c.exposure) || 0) / 1e7),
+          first_lender: c.lender, is_na: c.isNA ? 'Yes' : '', amount_cr: r2(c.amountCr),
+          first_charge_date: c.creationDate, type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' });
+      }
+    }
+    firstTimeFunded[w.key] = rows.sort((a, b) => (L.parseDate(b.first_charge_date) || 0) - (L.parseDate(a.first_charge_date) || 0));
   }
 
   // ---- per-entity summary + latest charge ----
@@ -120,15 +167,33 @@ function buildAnalyses(entities, charges, now, prevState) {
     const latestExt = ecD.find((c) => !c.isNA);
     const naC = ec.filter((c) => c.isNA), othC = ec.filter((c) => !c.isNA);
     summaryRows.push({
-      entity: e.name, short_name: e.short_name, sector: e.sector || 'Unclassified',
+      entity: e.name, short_name: e.short_name, sector: e.sector || 'Zero Exposure',
       saverisk_sector: e.saverisk_sector || '', saverisk_industry: e.saverisk_industry || '',
       exposure_cr: r2((Number(e.exposure) || 0) / 1e7), rating: e.rating ? `${e.rating.grade} (${e.rating.agency}) ${e.rating.ratingDate}` : '',
       status: e.status, total_open_charges: ec.length, na_charges: naC.length, other_charges: othC.length,
       latest_lender: latest ? latest.lender : '', latest_amount_cr: latest ? r2(latest.amountCr) : '', latest_date: latest ? latest.creationDate : '',
       latest_external_lender: latestExt ? latestExt.lender : '', latest_external_date: latestExt ? latestExt.creationDate : '',
     });
-    if (latest) latestRows.push({ entity: e.name, sector: e.sector || 'Unclassified', exposure_cr: r2((Number(e.exposure) || 0) / 1e7), lender: latest.lender, is_na: latest.isNA ? 'Yes' : '', amount_cr: r2(latest.amountCr), charge_date: latest.creationDate, type: latest.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' });
+    if (latest) latestRows.push({ entity: e.name, sector: e.sector || 'Zero Exposure', exposure_cr: r2((Number(e.exposure) || 0) / 1e7), lender: latest.lender, is_na: latest.isNA ? 'Yes' : '', amount_cr: r2(latest.amountCr), charge_date: latest.creationDate, type: latest.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' });
   }
+
+  // ---- NACL share of each entity's TOTAL charge creation (all current open charges) ----
+  // High share => Northern Arc is the dominant charge-holder; low share => other lenders dominate.
+  const naclShare = [];
+  for (const e of entities) {
+    const ec = charges.filter((c) => c.entity === e.name);
+    if (!ec.length) continue;
+    const naclC = ec.filter((c) => c.isNA);
+    const naclAmt = sum(naclC, (x) => x.amountCr), totAmt = sum(ec, (x) => x.amountCr);
+    naclShare.push({
+      entity: e.name, sector: e.sector || 'Zero Exposure', exposure_cr: r2((Number(e.exposure) || 0) / 1e7),
+      total_charges: ec.length, nacl_charges: naclC.length, other_charges: ec.length - naclC.length,
+      nacl_amount_cr: r2(naclAmt), total_amount_cr: r2(totAmt),
+      nacl_share_amount_pct: totAmt > 0 ? r2(naclAmt / totAmt * 100) : 0,
+      nacl_share_count_pct: ec.length > 0 ? r2(naclC.length / ec.length * 100) : 0,
+    });
+  }
+  naclShare.sort((a, b) => b.nacl_share_amount_pct - a.nacl_share_amount_pct || b.nacl_amount_cr - a.nacl_amount_cr);
 
   // ---- new since last run (by chargeId) ----
   const prevCharges = (prevState && prevState.charges) || {};
@@ -137,14 +202,14 @@ function buildAnalyses(entities, charges, now, prevState) {
   for (const c of charges) {
     const prevIds = new Set(prevCharges[c.entity.toUpperCase()] || []);
     if (!firstRun && !prevIds.has(c.chargeId)) {
-      newSinceRun.push({ entity: c.entity, sector: c.sector || 'Unclassified', lender: c.lender, is_na: c.isNA ? 'Yes' : '', amount_cr: r2(c.amountCr), charge_date: c.creationDate, charge_id: c.chargeId });
+      newSinceRun.push({ entity: c.entity, sector: c.sector || 'Zero Exposure', lender: c.lender, is_na: c.isNA ? 'Yes' : '', amount_cr: r2(c.amountCr), charge_date: c.creationDate, charge_id: c.chargeId });
     }
   }
   newSinceRun.sort((a, b) => (L.parseDate(b.charge_date) || 0) - (L.parseDate(a.charge_date) || 0));
 
-  const allCharges = charges.map((c) => ({ entity: c.entity, sector: c.sector || 'Unclassified', lender: c.lender, is_na: c.isNA ? 'Yes' : '', amount_cr: r2(c.amountCr), charge_date: c.creationDate, charge_id: c.chargeId, type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' }));
+  const allCharges = charges.map((c) => ({ entity: c.entity, sector: c.sector || 'Zero Exposure', lender: c.lender, is_na: c.isNA ? 'Yes' : '', amount_cr: r2(c.amountCr), charge_date: c.creationDate, charge_id: c.chargeId, type: c.isTrustee ? 'Debenture/Trustee' : 'Charge/Loan' }));
 
-  return { WINDOWS, now, firstRun, naVsOthers, naVsOthersBySector, externalCharges, naCharges, activeLenders, firstTime, summaryRows, latestRows, newSinceRun, allCharges, entities };
+  return { WINDOWS, now, firstRun, naVsOthers, naVsOthersBySector, externalCharges, naCharges, activeLenders, firstTime, firstTimeFunded, newLenders, naclShare, summaryRows, latestRows, newSinceRun, allCharges, entities };
 }
 
 module.exports = { WINDOWS, TRUSTEE_RE, buildAnalyses };

@@ -4,7 +4,7 @@ const path = require('path');
   const dir = process.argv[2];
   const b = await chromium.launch({ headless: true });
   const p = await b.newPage({ viewport: { width: 1240, height: 1600 } });
-  await p.goto('file://' + path.join(dir, 'dashboard.html'));
+  await p.goto('file://' + path.join(dir, 'charge_creation_dashboard.html'));
   await p.waitForTimeout(600);
   await p.screenshot({ path: 'dashboard_preview.png', fullPage: true });
   await b.close();

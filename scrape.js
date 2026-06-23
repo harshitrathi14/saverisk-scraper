@@ -7,7 +7,7 @@
 //       node scrape.js --refresh        ignore cache and re-fetch everything
 //       node scrape.js --fast           shorter delays (less "gentle")
 //
-// Outputs -> ./output/<timestamp>/ : Excel, dashboard.html, deck.pptx, CSVs.
+// Outputs -> ./output/<timestamp>/ : Excel, charge_creation_dashboard.html, deck.pptx, CSVs.
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -71,7 +71,7 @@ function loadEntities() {
 
 (async () => {
   const entities = loadEntities();
-  for (const e of entities) if (!e.sector || /^na$/i.test(e.sector)) e.sector = 'Unclassified';
+  for (const e of entities) if (!e.sector || /^na$/i.test(e.sector)) e.sector = 'Zero Exposure';
 
   const approved = L.loadJson(APPROVED_FILE, {});
   const state = L.loadJson(STATE_FILE, { lastRun: null, charges: {} });
@@ -187,13 +187,15 @@ function loadEntities() {
   const writeCsv = (n, rows) => { if (rows && rows.length) fs.writeFileSync(path.join(outDir, n), toCsv(rows, Object.keys(rows[0]))); };
 
   OUT.writeExcel(A, path.join(outDir, `Saverisk_Lending_Intelligence_${ts}.xlsx`));
-  OUT.writeHtml(A, path.join(outDir, 'dashboard.html'), { entityCount: okEntities.length, generated: NOW.toUTCString() });
+  OUT.writeHtml(A, path.join(outDir, 'charge_creation_dashboard.html'), { entityCount: okEntities.length, generated: NOW.toUTCString() });
   try { await PPT.writePpt(A, path.join(outDir, `Saverisk_Deck_${ts}.pptx`), { entityCount: okEntities.length, generated: NOW.toUTCString() }); }
   catch (err) { console.error('PPT failed:', err.message); }
   writeCsv('entity_summary.csv', A.summaryRows);
   writeCsv('new_since_last_run.csv', A.newSinceRun);
-  for (const w of R.WINDOWS) { writeCsv(`funded_by_others_${w.key}.csv`, A.externalCharges[w.key]); writeCsv(`funded_by_northern_arc_${w.key}.csv`, A.naCharges[w.key]); writeCsv(`active_lenders_${w.key}.csv`, A.activeLenders[w.key]); writeCsv(`first_time_lenders_${w.key}.csv`, A.firstTime[w.key]); }
+  for (const w of R.WINDOWS) { writeCsv(`funded_by_others_${w.key}.csv`, A.externalCharges[w.key]); writeCsv(`funded_by_northern_arc_${w.key}.csv`, A.naCharges[w.key]); writeCsv(`first_time_funded_${w.key}.csv`, A.firstTimeFunded[w.key]); writeCsv(`active_lenders_${w.key}.csv`, A.activeLenders[w.key]); writeCsv(`first_time_lenders_${w.key}.csv`, A.firstTime[w.key]); writeCsv(`new_lenders_to_book_${w.key}.csv`, A.newLenders[w.key]); }
   writeCsv('na_vs_others.csv', A.naVsOthers);
+  writeCsv('nacl_share_per_entity.csv', A.naclShare);        // NACL % share of each entity's charges
+  OUT.writeSheetExcel(A.naclShare, 'NACL Share per Entity', path.join(outDir, `NACL_Share_per_Entity_${ts}.xlsx`));
   writeCsv('all_charges.csv', A.allCharges);                 // the full charge list (big CSV)
   if (unmatched.length) writeCsv('unmatched.csv', unmatched);
   // snapshot the raw cache into the run folder too (full per-entity scraped data)

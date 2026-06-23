@@ -1,10 +1,16 @@
 # Saverisk Lending Intelligence Scraper
 
-Compares **Northern Arc** wholesale lending vs other lenders using **MCA charge-creation**
-data from Saverisk, across 1-week / 1-month / 3-month / 6-month windows, sector-wise.
+Compares **Northern Arc (NACL)** wholesale lending vs other lenders using **MCA charge-creation**
+data from Saverisk, across **1-week / 1-month / 2-month / 3-month / 6-month** windows, by
+**Nimbus sector**, over the set of **Northern Arc onboarded entities**.
 
-For each onboarded entity it pulls all charges, tags each lender as **Northern Arc** vs
-**Other**, and produces an Excel workbook, a self-contained HTML dashboard, and a PPT deck.
+For each onboarded entity it pulls all charges, tags each lender as **NACL** vs **Other**, and
+produces an Excel workbook, a self-contained HTML dashboard (`charge_creation_dashboard.html`),
+and a polished PPT deck. Analyses include: NACL-vs-others (overall + by sector), entities funded
+by other lenders / by NACL (per charge), entities funded for the first time, most active lenders,
+first-time lender→borrower, and lenders new to the book.
+
+See **CLAUDE.md** for full architecture, Saverisk API details, and gotchas.
 
 > Running the scraper uses **no AI** — it is plain browser automation (Playwright).
 
@@ -24,11 +30,12 @@ Provide an input file `input.csv` with columns: `name, short_name, cin, exposure
 node login.js              # one-time: log in (mobile + OTP); session is saved locally
 node scrape.js             # gentle, cache-backed run over all entities
 node scrape.js --max-new 150   # fetch at most 150 new entities (batching)
-node scrape.js --report-only   # rebuild outputs from cache, no scraping
+node scrape.js --report-only   # rebuild outputs from cache, no scraping (instant)
 node scrape.js --rating        # also scrape credit rating (slower, UI-based)
 ```
 
-Outputs land in `output/<timestamp>/`: Excel, `dashboard.html`, `*.pptx`, CSVs.
+Outputs land in `output/<timestamp>/`: `charge_creation_dashboard.html`, Excel, `*.pptx`,
+per-window CSVs, `all_charges.csv`, and a `charges_cache.json` snapshot.
 
 ## How it works
 
