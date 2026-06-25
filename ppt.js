@@ -15,15 +15,22 @@ function writePpt(A, file, meta) {
   p.defineLayout({ name: 'WIDE', width: 13.33, height: 7.5 });
   p.layout = 'WIDE';
   p.theme = { headFontFace: 'Segoe UI', bodyFontFace: 'Segoe UI' };
+  addMainSlides(p, A, meta);
+  return p.writeFile({ fileName: file });
+}
+
+// Add the main "NACL vs Others" analysis slides to an existing deck `p`.
+// `state` = { pageNo } is a shared page counter so a combined deck numbers pages continuously.
+function addMainSlides(p, A, meta, state) {
+  state = state || { pageNo: 0 };
   const wlabel = (k) => (A.WINDOWS.find((w) => w.key === k) || {}).label || k;
-  let pageNo = 0;
 
   const footer = (s) => {
-    pageNo++;
+    state.pageNo++;
     s.addShape('line', { x: 0.5, y: 7.06, w: 12.33, h: 0, line: { color: C.line, width: 1 } });
     s.addText('Saverisk · Charge-Creation Lending Intelligence', { x: 0.5, y: 7.1, w: 8, h: 0.3, color: C.mut, fontSize: 8 });
     s.addText('CONFIDENTIAL — Northern Arc', { x: 8.5, y: 7.1, w: 3.0, h: 0.3, color: C.mut, fontSize: 8, align: 'right' });
-    s.addText(String(pageNo), { x: 12.6, y: 7.1, w: 0.4, h: 0.3, color: C.mut, fontSize: 8, align: 'right' });
+    s.addText(String(state.pageNo), { x: 12.6, y: 7.1, w: 0.4, h: 0.3, color: C.mut, fontSize: 8, align: 'right' });
   };
   const header = (title, sub, accent = C.bar) => {
     const s = p.addSlide(); s.background = { color: C.white };
@@ -179,8 +186,6 @@ function writePpt(A, file, meta) {
   tbl(s, shareCols, withCharges, 18, shareW);
   s = header('Northern Arc share — LOWEST', 'Where other lenders dominate the onboarded borrower’s charges', C.oth);
   tbl(s, shareCols, [...withCharges].reverse(), 18, shareW);
-
-  return p.writeFile({ fileName: file });
 }
 
-module.exports = { writePpt };
+module.exports = { writePpt, addMainSlides };

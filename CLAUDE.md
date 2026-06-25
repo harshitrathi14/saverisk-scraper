@@ -27,12 +27,17 @@ The session expires (~time-based), so each weekly refresh starts with a fresh lo
    ```bash
    node scrape.js --max-age 6
    ```
-   ~25–35 min at gentle pace. It diffs against last week and fills the "new since last run" report.
-   - If it prints **SESSION EXPIRED** mid-run: just re-run `node login.js` then
-     `node scrape.js --max-age 6` again — cache + freshness make it resume from where it stopped.
-4. **Outputs** land in `output/<timestamp>/`. Open `charge_creation_dashboard.html`; share the
-   Excel + `*.pptx`. To only rebuild reports after an input/label tweak (no scraping):
-   `node scrape.js --report-only`.
+   ~45–60 min at gentle pace. **One run now produces EVERYTHING** (no separate commands):
+   the main NACL-vs-others analysis + the "new since last run" diff, AND it refreshes the 5-year
+   **charge history** (open + satisfied/closed charges, same session) and builds the **Renewal Radar**
+   (HTML/Excel/CSV), one **combined deck**, and the **email draft**.
+   - If it prints **SESSION EXPIRED** mid-run: re-run `node login.js` then `node scrape.js --max-age 6`
+     — both the charge cache and the history cache resume from where they stopped.
+4. **Outputs** land in `output/<timestamp>/`. Open `charge_creation_dashboard.html` (analysis) and
+   `renewal_radar.html` (forward leads). Share the combined deck **`Saverisk_Lending_Intelligence_Deck.pptx`**
+   (also copied to the project root) + the Excel files + `Renewal_Radar_email.md` (root). To rebuild ALL
+   outputs from cache without any scraping: `node scrape.js --report-only` (instant; the Renewal Radar,
+   deck and email rebuild from the existing caches too).
 
 That's it — steps 2–4 are the whole weekly job. The agent should NOT re-derive the analysis or
 re-read every file; this runbook + the sections below are the source of truth.
@@ -48,8 +53,22 @@ node scrape.js --refresh       # ignore cache, re-fetch everything
 node scrape.js --rating        # also scrape credit rating (slow, UI-based; off by default)
 node scrape.js --fast          # shorter delays (less "gentle")
 ```
-Outputs land in `output/<timestamp>/`: `charge_creation_dashboard.html`, Excel, `*.pptx`,
-per-window CSVs, `all_charges.csv`, and a `charges_cache.json` snapshot.
+Outputs land in `output/<timestamp>/`: `charge_creation_dashboard.html`, Excel, the combined
+`*.pptx`, per-window CSVs, `all_charges.csv`, a `charges_cache.json` snapshot, **plus the Renewal
+Radar set** (`renewal_radar.html`, `Renewal_Radar.xlsx`, `leads.csv`, `forecast_calendar.csv`,
+`entity_cadence.csv`, `monthly_flow.csv`, `email_draft.md`). The combined deck + email are also
+copied to the project root.
+
+### Renewal Radar (forward lead intelligence) — `renewal_radar/`
+Built automatically inside `scrape.js`. Predicts each entity's next loan/renewal/top-up over 12
+months and which lender is likely, then flags **NACL-competible** incumbents (≤ AA-) as leads.
+Uses the 5-year charge **history** (incl. satisfied/repaid charges) for cadence + the open charges
+for real lender names. See `renewal_radar/README.md` for the data contract and honest caveats
+(amount = secured-charge proxy; no exact per-loan tenure; ~⅔ of history lender names bucket as
+"Others"; lender ratings are NOT in Saverisk — populate `renewal_radar/lender_ratings.json` from
+NACL internal; D/E gate needs NACL internal financials by CIN). Standalone helpers (optional, the
+weekly run already does both): `node renewal_radar/radar.js` (radar only, from cache) and
+`node make_deck.js` (combined deck only). History-only re-harvest: `node harvest_history.js`.
 
 ## Input
 `input.csv` (regenerated from `CIN_exposure_onboarded_nimbus entities.xlsx`) with columns:
@@ -66,11 +85,14 @@ PPT) loops over it automatically.
 | File | Role |
 |------|------|
 | `login.js` | Launch headed browser; auto-detect login; save `.session/` + `storageState.json` |
-| `lib.js` | Saverisk API helpers, name matching, date/HTML parsing |
+| `lib.js` | Saverisk API helpers (incl. `fetchChargeHistory` — open+satisfied events), matching, parsing |
 | `reports.js` | `buildAnalyses()` — all the NACL-vs-others analyses (pure functions) |
 | `output.js` | Excel workbook + self-contained HTML dashboard |
-| `ppt.js` | Polished PowerPoint deck (cover, exec summary, per-window sections) |
-| `scrape.js` | Orchestrates: match → fetch → cache → analyse → write outputs |
+| `ppt.js` | Deck Part 1; `addMainSlides(p,A,meta,state)` so it can append to a combined deck |
+| `scrape.js` | Orchestrates everything: match → fetch charges + history → analyse → main outputs + Renewal Radar + combined deck + email |
+| `harvest_history.js` | Standalone charge-history harvester (the weekly run does this inline) |
+| `make_deck.js` | Standalone combined-deck builder from caches (the weekly run does this inline) |
+| `renewal_radar/` | `lifecycle.js` cadence/flow · `predict.js` forecast · `leads.js`+`ratings.js` competible filter · `report_radar.js` HTML/Excel/CSV · `ppt_radar.js` deck Part 2 · `email.js` · `radar.js` standalone orchestrator · `README.md` |
 | `preview.js` | Render the HTML to `dashboard_preview.png` for a visual check |
 
 ## Saverisk internals (reverse-engineered)

@@ -223,6 +223,66 @@ async function fetchAllCharges(page, hash) {
   return { charges: out };
 }
 
+// low-level call to the "Charge History" view (full lifecycle: Creation/Modification/Satisfaction
+// events for BOTH open and closed/satisfied charges — the superset of "Open Charge").
+async function apiChargeHistory(page, hash, pgno) {
+  return page.evaluate(async ({ hash, pgno }) => {
+    const r = await fetch('https://www.saverisk.com/CmpAsyncDataService.aspx/ExecuteMethodStaticAsync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({
+        cinno: hash,
+        parameterNvals: '{ddl}|;{period}|;{unit}|;{ddltemplate}|;{ddlsort}|;{ddlto}|;{IsSort}|',
+        pgno: String(pgno),
+        dashboardurl: 'Charge History',
+        category: 'Company',
+      }),
+    });
+    const t = await r.text();
+    if (!r.ok) return { error: 'http ' + r.status, raw: t.slice(0, 200) };
+    try {
+      const inner = JSON.parse(JSON.parse(t).d.Result || '{}');
+      return { ok: true, table: inner.Table || [] };
+    } catch (e) { return { error: 'parse', raw: t.slice(0, 200) }; }
+  }, { hash, pgno });
+}
+
+// fetch ALL charge-history events (paginates to the end; no artificial page cap).
+// Returns { events:[{chargeId, lender, amountCr, date, eventType}] }, optionally filtered to
+// events on/after `sinceMs` (epoch ms). Undated rows are kept (flagged via date:'').
+async function fetchChargeHistory(page, hash, sinceMs = 0, maxPages = 120) {
+  const seen = new Set();
+  const out = [];
+  for (let pg = 1; pg <= maxPages; pg++) {
+    const res = await apiChargeHistory(page, hash, pg);
+    if (res.error) return { error: res.error, raw: res.raw, events: out };
+    const rows = res.table;
+    if (!rows.length) break;
+    let added = 0;
+    for (const row of rows) {
+      const id = String(row.Charge_ID || row.Charge_Id || '');
+      const eventType = stripHtml(row['Creation_or_Modification_or_Satisfaction'] || '');
+      const rawDate = stripHtml(row['Date_Charge_Creation/Modification/Satisfaction'] || '');
+      const dkey = id + '|' + eventType + '|' + rawDate;
+      if (seen.has(dkey)) continue;
+      seen.add(dkey); added++;
+      const amt = row['Charge_Amount_Secured_in_(Rs._Crore)'];
+      out.push({
+        chargeId: id,
+        lender: stripHtml(row.Charge_Holder),
+        amountCr: amt === '' || amt == null ? null : Number(amt),
+        date: rawDate,
+        eventType,
+      });
+    }
+    if (added === 0) break;        // a fully-duplicate page -> stop
+    if (rows.length < 50) break;   // last page
+  }
+  // optional 5-year (or any) cutoff filter, keeping undated rows
+  const events = sinceMs ? out.filter((e) => { const d = parseDate(e.date); return !d || d.getTime() >= sinceMs; }) : out;
+  return { events, fetched: out.length };
+}
+
 // ---------- json persistence ----------
 function loadJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
@@ -231,5 +291,5 @@ function saveJson(file, obj) { fs.writeFileSync(file, JSON.stringify(obj, null, 
 
 module.exports = {
   BASE, normName, similarity, parseDate, daysAgo, fmtDate, stripHtml,
-  apiSearch, apiCharges, fetchAllCharges, apiRating, fetchLatestRating, fetchRatingUI, fetchOverview, loadJson, saveJson,
+  apiSearch, apiCharges, fetchAllCharges, apiChargeHistory, fetchChargeHistory, apiRating, fetchLatestRating, fetchRatingUI, fetchOverview, loadJson, saveJson,
 };

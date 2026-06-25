@@ -16,11 +16,22 @@ const L = require('./lib');
 const R = require('./reports');
 const OUT = require('./output');
 const PPT = require('./ppt');
+const PptxGenJS = require('pptxgenjs');
+// Renewal Radar modules (built into the same single run)
+const RADAR = {
+  lifecycle: require('./renewal_radar/lifecycle'),
+  predict: require('./renewal_radar/predict'),
+  leads: require('./renewal_radar/leads'),
+  report: require('./renewal_radar/report_radar'),
+  email: require('./renewal_radar/email'),
+  ppt: require('./renewal_radar/ppt_radar'),
+};
 
 const SESSION_DIR = path.join(__dirname, '.session');
 const STATE_FILE = path.join(__dirname, 'state.json');
 const APPROVED_FILE = path.join(__dirname, 'approved_matches.json');
 const CACHE_FILE = path.join(__dirname, 'charges_cache.json');
+const HIST_FILE = path.join(__dirname, 'charge_history_cache.json');
 const INPUT_CSV = path.join(__dirname, 'input.csv');
 const OUT_ROOT = path.join(__dirname, 'output');
 const NA_RE = /northern arc/i;
@@ -35,6 +46,8 @@ const FAST = args.includes('--fast');
 const RATING = args.includes('--rating');
 const NO_OVERVIEW = args.includes('--no-overview');
 const REPORT_ONLY = args.includes('--report-only'); // rebuild outputs from cache, no browser/session
+const HISTORY = args.includes('--history');         // force the (quarterly) charge-history refresh ON
+const NO_HISTORY = args.includes('--no-history');   // force it OFF (default is OFF / ask if interactive)
 const NOW = process.env.RUN_NOW ? new Date(process.env.RUN_NOW) : new Date();
 
 // gentle pacing: random delay between fetched entities, longer pause every batch
@@ -43,6 +56,14 @@ const GENTLE = FAST
   : { min: 1300, max: 3000, batchEvery: 40, batchPause: [20000, 40000] };
 const rnd = (a, b) => Math.floor(a + Math.random() * (b - a));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// y/N prompt — returns `def` immediately when not attached to a terminal (cron / piped runs).
+function askYesNo(q, def = false) {
+  if (!process.stdin.isTTY) return Promise.resolve(def);
+  return new Promise((res) => {
+    const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(q, (a) => { rl.close(); const s = (a || '').trim().toLowerCase(); res(s ? s[0] === 'y' : def); });
+  });
+}
 
 // ---------- CSV ----------
 function parseCsv(text) {
@@ -99,6 +120,24 @@ function loadEntities() {
   userid = await page.evaluate(() => { const e = document.querySelector('[id*="hdn_userid"],[id*="hdn_username"]'); return e ? e.value : ''; });
   if (!userid) { console.error('\n*** Not logged in. Run the login step first. ***'); await ctx.close(); process.exit(2); }
   console.log('Session OK. user id:', userid);
+
+  // Charge-history refresh is a QUARTERLY job (it ~doubles runtime). Default OFF so the weekly run
+  // stays fast; the Renewal Radar still builds from the last saved history cache. Decide once, up
+  // front (so you can walk away): --history forces ON, --no-history forces OFF, else ask if interactive.
+  let runHistory = false;
+  {
+    const histCache0 = L.loadJson(HIST_FILE, {});
+    const last = Object.values(histCache0).map((r) => (r && r.harvestedAt ? new Date(r.harvestedAt) : null)).filter(Boolean).sort((a, b) => b - a)[0];
+    const ageDays = last ? Math.round((NOW - last) / 864e5) : null;
+    const due = ageDays == null || ageDays >= 80;     // ~quarterly
+    if (NO_HISTORY) runHistory = false;
+    else if (HISTORY) runHistory = true;
+    else {
+      console.log(`Charge history (open + satisfied) last refreshed ${ageDays == null ? 'NEVER' : ageDays + ' days ago'}${due ? ' — quarterly refresh is DUE' : ''}.`);
+      runHistory = await askYesNo('Refresh the 5-year charge history now? Adds ~20–30 min (quarterly job). [y/N] ', false);
+    }
+    console.log(runHistory ? '→ Will refresh charge history this run.' : '→ Skipping history refresh; Renewal Radar will use the saved history cache.');
+  }
 
   async function refreshSession() {
     await page.goto(L.BASE + '/myorders.aspx', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
@@ -157,6 +196,40 @@ function loadEntities() {
     await sleep(rnd(GENTLE.min, GENTLE.max));
     if (newFetches % GENTLE.batchEvery === 0) { const p = rnd(GENTLE.batchPause[0], GENTLE.batchPause[1]); console.log(`  …batch pause ${Math.round(p / 1000)}s (gentle)`); await sleep(p); }
   }
+
+  // ---- charge-history pass (for the Renewal Radar): full event log incl. closed/satisfied charges ----
+  // Reuses the same session. Gated by the same --max-age freshness as the main charges, so weekly
+  // runs refresh it incrementally; a fresh history snapshot is skipped (zero requests).
+  if (!aborted && runHistory) {
+    try {
+      const histCache = L.loadJson(HIST_FILE, {});
+      const SINCE = new Date(NOW.getFullYear() - 5, NOW.getMonth(), NOW.getDate()).getTime(); // 5y lookback
+      const histStale = (rec) => !rec || !rec.harvestedAt || (MAX_AGE_DAYS !== Infinity && (NOW - new Date(rec.harvestedAt)) > MAX_AGE_DAYS * 864e5);
+      let hn = 0, hconsec = 0;
+      console.log('Refreshing charge history (open + satisfied) for the Renewal Radar…');
+      for (const e of entities) {
+        if (aborted) break;
+        const key = e.name.toUpperCase();
+        const hash = (cache[key] && cache[key].hash) || (approved[key] && approved[key].hash);
+        if (!hash) continue;
+        if (!REFRESH && !histStale(histCache[key])) continue;
+        let hr = await L.fetchChargeHistory(page, hash, SINCE);
+        if (hr.error) {
+          hconsec++;
+          if (hconsec >= 4) { const uid = await refreshSession(); if (!uid) { aborted = true; console.error('\n*** SESSION EXPIRED during history pass — re-login + re-run to resume (cache kept). ***'); break; } userid = uid; hconsec = 0; hr = await L.fetchChargeHistory(page, hash, SINCE); }
+          if (hr.error) continue;
+        }
+        hconsec = 0;
+        const ev = hr.events || [];
+        histCache[key] = { matched_company: (cache[key] || {}).matched_company || e.name, cin: (cache[key] || {}).cin || e.cin, hash, sector: e.sector, exposure: e.exposure, onboarded_date: e.onboarded, events: ev, eventCount: ev.length, harvestedAt: NOW.toISOString() };
+        L.saveJson(HIST_FILE, histCache);
+        hn++;
+        if (hn % 25 === 0) console.log(`  …history refreshed ${hn}`);
+        await sleep(rnd(GENTLE.min, GENTLE.max));
+      }
+      console.log(`Charge history refreshed for ${hn} entities.`);
+    } catch (err) { console.error('History pass failed (continuing with existing history cache):', err.message); }
+  }
   } // end if (!REPORT_ONLY)
   if (REPORT_ONLY) console.log(`Report-only: building from cache (${Object.keys(cache).length} entities), no scraping.`);
 
@@ -191,8 +264,28 @@ function loadEntities() {
 
   OUT.writeExcel(A, path.join(outDir, `Saverisk_Lending_Intelligence_${ts}.xlsx`));
   OUT.writeHtml(A, path.join(outDir, 'charge_creation_dashboard.html'), { entityCount: okEntities.length, generated: NOW.toUTCString() });
-  try { await PPT.writePpt(A, path.join(outDir, `Saverisk_Deck_${ts}.pptx`), { entityCount: okEntities.length, generated: NOW.toUTCString() }); }
-  catch (err) { console.error('PPT failed:', err.message); }
+  // ---------- Renewal Radar outputs + ONE combined deck (Part 1 analysis + Part 2 radar) + email ----------
+  try {
+    const lifecycle = RADAR.lifecycle.buildLifecycle();
+    const forecast = RADAR.predict.buildForecast(lifecycle, 12);
+    const leads = RADAR.leads.buildLeads(forecast);
+    RADAR.report.writeRadar(lifecycle, forecast, leads, outDir);   // renewal_radar.html + Renewal_Radar.xlsx + CSVs
+    let hev = 0, hsat = 0; try { const h = JSON.parse(fs.readFileSync(HIST_FILE, 'utf8')); for (const k in h) for (const ev of (h[k].events || [])) { hev++; if (/satisf/i.test(ev.eventType || '')) hsat++; } } catch {}
+    const rmeta = { entityCount: lifecycle.entities.length, eventCount: hev, satisfactionCount: hsat, generated: NOW.toUTCString() };
+    const email = RADAR.email.buildEmail(lifecycle, forecast, leads, rmeta);
+    fs.writeFileSync(path.join(outDir, 'email_draft.md'), email);
+    fs.writeFileSync(path.join(__dirname, 'Renewal_Radar_email.md'), email);
+    // one combined deck
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: 'WIDE', width: 13.33, height: 7.5 }); pptx.layout = 'WIDE'; pptx.theme = { headFontFace: 'Segoe UI', bodyFontFace: 'Segoe UI' };
+    const st = { pageNo: 0 };
+    PPT.addMainSlides(pptx, A, { entityCount: okEntities.length, generated: NOW.toUTCString() }, st);
+    RADAR.ppt.addRadarSlides(pptx, lifecycle, forecast, leads, rmeta, st);
+    const deckRoot = path.join(__dirname, 'Saverisk_Lending_Intelligence_Deck.pptx');
+    await pptx.writeFile({ fileName: deckRoot });
+    fs.copyFileSync(deckRoot, path.join(outDir, `Saverisk_Lending_Intelligence_Deck_${ts}.pptx`));
+    console.log(`Renewal Radar built: ${leads.length} competible leads; combined deck + email written.`);
+  } catch (err) { console.error('Renewal Radar / deck step failed (core analysis outputs still written):', err.message); }
   writeCsv('entity_summary.csv', A.summaryRows);
   writeCsv('new_since_last_run.csv', A.newSinceRun);
   for (const w of R.WINDOWS) { writeCsv(`funded_by_others_${w.key}.csv`, A.externalCharges[w.key]); writeCsv(`funded_by_northern_arc_${w.key}.csv`, A.naCharges[w.key]); writeCsv(`first_time_funded_${w.key}.csv`, A.firstTimeFunded[w.key]); writeCsv(`active_lenders_${w.key}.csv`, A.activeLenders[w.key]); writeCsv(`first_time_lenders_${w.key}.csv`, A.firstTime[w.key]); writeCsv(`new_lenders_to_book_${w.key}.csv`, A.newLenders[w.key]); }
